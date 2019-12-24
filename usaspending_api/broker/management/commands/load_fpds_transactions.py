@@ -9,7 +9,7 @@ from usaspending_api.common.retrieve_file_from_uri import RetrieveFileFromUri
 from usaspending_api.common.helpers.date_helper import datetime_command_line_argument_type
 from usaspending_api.common.helpers.sql_helpers import get_broker_dsn_string
 from usaspending_api.common.helpers.etl_helpers import update_c_to_d_linkages
-from usaspending_api.etl.award_helpers import update_awards, update_contract_awards
+from usaspending_api.etl.award_helpers import update_awards, update_contract_awards, prune_empty_awards
 from usaspending_api.broker.helpers.last_load_date import get_last_load_date, update_last_load_date
 
 logger = logging.getLogger("console")
@@ -154,25 +154,16 @@ class Command(BaseCommand):
             # TODO: reactivate once this is performant. Currently the tables are too large to allow
             # logger.info("cleaning orphaned metadata")
             # destroy_orphans()
-            logger.info(
-                "updating award values ({} awards touched by transaction modifications)".format(
-                    len(set(self.modified_award_ids))
-                )
-            )
-            logger.info("{} awards touched by update_awards()".format(update_awards(tuple(self.modified_award_ids))))
-            logger.info(
-                "{} awards touched by update_contract_awards()".format(
-                    update_contract_awards(tuple(self.modified_award_ids))
-                )
-            )
+            unique_awards = set(self.modified_award_ids)
+            logger.info(f"{len(unique_awards)} award records impacted by transaction DML operations)")
+            logger.info(f"{prune_empty_awards(tuple(unique_awards))} award records removed")
+            logger.info(f"{update_awards(tuple(unique_awards))} award records updated")
+            logger.info(f"{update_contract_awards(tuple(unique_awards))} award records updated w/ FPDS-specific fields")
             update_c_to_d_linkages("contract")
 
         if failed_ids:
-            logger.error(
-                "The following detached_award_procurement_ids failed to load: {}".format(
-                    ["{},".format(failure) for failure in failed_ids]
-                )
-            )
+            failed_id_str = ", ".join([str(id) for id in failed_ids])
+            logger.error(f"The following detached_award_procurement_ids failed to load: [{failed_id_str}]")
             raise SystemExit(1)
 
         if options["reload_all"] or options["since_last_load"]:

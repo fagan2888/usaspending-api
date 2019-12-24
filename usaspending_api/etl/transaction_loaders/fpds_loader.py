@@ -77,46 +77,53 @@ def delete_stale_fpds(date):
 
     detached_award_procurement_ids = get_deleted_fpds_data_from_s3(date)
 
-    if detached_award_procurement_ids:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "select transaction_id from transaction_fpds where detached_award_procurement_id in ({})".format(
-                    ",".join([str(id) for id in detached_award_procurement_ids])
-                )
-            )
-            # assumes, possibly dangerously, that this won't be too many for the job to handle
-            transaction_normalized_ids = cursor.fetchall()
+    ids_to_delete = ",".join([str(id) for id in detached_award_procurement_ids])
+    logger.debug(f"Obtained these delete record IDs: [{ids_to_delete}]")
 
-            # since sql can't handle empty updates, we need to safely exit
-            if not transaction_normalized_ids:
-                return []
-
-            # Set backreferences from Awards to Transaction Normalized to null. These pointers will be correctly updated
-            # in the update awards stage later on
-            cursor.execute(
-                "update awards set latest_transaction_id = null, earliest_transaction_id = null "
-                "where latest_transaction_id in ({ids}) or earliest_transaction_id in ({ids}) "
-                "returning id".format(ids=",".join([str(row[0]) for row in transaction_normalized_ids]))
-            )
-            awards_touched = cursor.fetchall()
-
-            # Remove Trasaction FPDS rows
-            cursor.execute(
-                "delete from transaction_fpds where detached_award_procurement_id in ({})".format(
-                    ",".join([str(id) for id in detached_award_procurement_ids])
-                )
-            )
-
-            # Remove Transaction Normalized rows
-            cursor.execute(
-                "delete from transaction_normalized where id in ({})".format(
-                    ",".join([str(row[0]) for row in transaction_normalized_ids])
-                )
-            )
-
-            return awards_touched
-    else:
+    if not detached_award_procurement_ids:
         return []
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"select transaction_id from transaction_fpds where detached_award_procurement_id in ({ids_to_delete})"
+        )
+        # assumes, possibly dangerously, that this won't be too many for the job to handle
+        transaction_normalized_ids = [str(row[0]) for row in cursor.fetchall()]
+
+        # since sql can't handle empty updates, we need to safely exit
+        if not transaction_normalized_ids:
+            return []
+
+        tx_normalized_id_str = ",".join(transaction_normalized_ids)
+
+        # Set backreferences from Awards to Transaction Normalized to null. These pointers will be correctly updated
+        # in the update awards stage later on
+        cursor.execute(
+            "update awards set latest_transaction_id = null, earliest_transaction_id = null "
+            "where latest_transaction_id in ({ids}) or earliest_transaction_id in ({ids}) "
+            "returning id".format(ids=tx_normalized_id_str)
+        )
+        awards_touched = cursor.fetchall()
+
+        logger.info(f"{len(awards_touched)} were unlinked to bookend transactions due to deletes")
+
+        # Remove Trasaction FPDS rows
+        cursor.execute(
+            "delete from transaction_fpds where transaction_id in ({}) returning transaction_id".format(
+                tx_normalized_id_str
+            )
+        )
+        deleted_fpds = cursor.fetchall()
+
+        # Remove Transaction Normalized rows
+        cursor.execute("delete from transaction_normalized where id in ({}) returning id".format(tx_normalized_id_str))
+        deleted_transactions = cursor.fetchall()
+
+        if len(deleted_transactions) != len(deleted_fpds):
+            msg = "Delete Mismatch! Counts of transaction_normalized ({}) and transaction_fpds ({}) deletes"
+            raise RuntimeError(msg.format(len(deleted_transactions), len(deleted_fpds)))
+
+        return awards_touched
 
 
 def load_ids(chunk):

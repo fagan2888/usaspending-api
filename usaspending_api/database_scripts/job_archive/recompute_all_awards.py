@@ -66,9 +66,10 @@ _earliest_transaction_cte = str(
     "    tn.period_of_performance_start_date "
     "  FROM transaction_normalized tn"
     "  WHERE tn.award_id IN ({award_ids}) "
-    "  ORDER BY tn.award_id, tn.action_date ASC, tn.modification_number ASC, tn.id ASC "
+    "  ORDER BY tn.award_id, tn.action_date ASC, tn.modification_number ASC, tn.transaction_unique_id ASC "
     ")"
 )
+
 _latest_transaction_cte = str(
     "txn_latest AS ( "
     "  SELECT DISTINCT ON (tn.award_id) "
@@ -93,7 +94,7 @@ _latest_transaction_cte = str(
     "      ELSE NULL END AS category "
     "  FROM transaction_normalized tn"
     "  WHERE tn.award_id IN ({award_ids}) "
-    "  ORDER BY tn.award_id, tn.action_date DESC, tn.modification_number DESC, tn.id DESC "
+    "  ORDER BY tn.award_id, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
     ")"
 )
 _aggregate_transaction_cte = str(
@@ -127,7 +128,7 @@ _executive_comp_cte = str(
     "  FROM transaction_normalized tn "
     "  INNER JOIN {transaction_table} AS tf ON tn.id = tf.transaction_id "
     "  WHERE tf.officer_1_name IS NOT NULL AND award_id IN ({award_ids}) "
-    "  ORDER BY tn.award_id, tn.action_date DESC, tn.modification_number DESC, tn.id DESC "
+    "  ORDER BY tn.award_id, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
     ") "
 )
 
@@ -135,6 +136,7 @@ UPDATE_AWARDS_SQL = str(
     "WITH {}, {}, {}, {} "
     "UPDATE awards a "
     "SET "
+    "update_date = now(), "
     "earliest_transaction_id = e.id, "
     "date_signed = e.action_date, "
     "description = e.description, "
