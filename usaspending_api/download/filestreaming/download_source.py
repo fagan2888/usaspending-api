@@ -2,6 +2,7 @@ from usaspending_api.common.exceptions import InvalidParameterException
 from usaspending_api.download.lookups import VALUE_MAPPINGS
 from usaspending_api.download.v2 import download_column_historical_lookups
 from usaspending_api.references.models import ToptierAgency
+from usaspending_api.common.helpers.orm_helpers import generate_raw_quoted_query
 
 
 class DownloadSource:
@@ -50,6 +51,7 @@ class DownloadSource:
         if annotations_function:
             for field, annotation in annotations_function().items():
                 if field not in queryset.query.annotation_select:
+                    print(f"annotating {field}")
                     queryset = queryset.annotate(**{field: annotation})
         self._queryset = queryset
 

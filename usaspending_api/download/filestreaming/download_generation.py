@@ -29,6 +29,7 @@ from usaspending_api.download.helpers import (
     write_to_download_log as write_to_log,
 )
 from usaspending_api.download.lookups import JOB_STATUS_DICT, VALUE_MAPPINGS, FILE_FORMATS
+from usaspending_api.common.helpers.orm_helpers import generate_raw_quoted_query
 
 
 DOWNLOAD_VISIBILITY_TIMEOUT = 60 * 10
@@ -217,7 +218,10 @@ def parse_source(source, columns, download_job, working_dir, piid, assistance_id
             type=d_map[source.file_type],
         )
 
+    print("source: \n{}".format(source))
     source_query = source.row_emitter(columns)
+    print(f"resulting query: \n{generate_raw_quoted_query(source_query)}")
+
     source.file_name = f"{source_name}.{extension}"
     source_path = os.path.join(working_dir, source.file_name)
 
@@ -408,6 +412,7 @@ def apply_annotations_to_sql(raw_query, aliases):
         deriv_dict[alias] = "{}{}".format(str_match[0], str_match[1]).strip()
         # Provides some safety if a field isn't provided in this historical_lookup
         if alias in aliases_copy:
+            print("removing an alias")
             aliases_copy.remove(alias)
 
     # Validate we have an alias for each value in the SELECT string
