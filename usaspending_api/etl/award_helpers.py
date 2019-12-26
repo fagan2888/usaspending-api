@@ -26,24 +26,33 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
     (award type, awarding agency, etc.) that will always be set to the value of
     the Award's most recent transaction.
     """
+    award_unique_keys = None
+    sql = "SELECT generated_unique_award_id FROM awards"
+    values = None
+    if award_tuple:
+        sql += " WHERE id IN %s"
+        values = [award_tuple]
+        with connection.cursor() as cursor:
+            cursor.execute(sql, values)
+            award_unique_keys = tuple([row[0] for row in cursor.fetchall()])
 
     _earliest_transaction_cte = str(
         "txn_earliest AS ( "
-        "  SELECT DISTINCT ON (tn.award_id) "
-        "    tn.award_id, "
+        "  SELECT DISTINCT ON (tn.unique_award_key) "
+        "    tn.unique_award_key, "
         "    tn.id, "
         "    tn.action_date, "
         "    tn.description, "
         "    tn.period_of_performance_start_date "
         "  FROM transaction_normalized tn "
         "  {} "
-        "  ORDER BY tn.award_id, tn.action_date ASC, tn.modification_number ASC, tn.transaction_unique_id ASC "
+        "  ORDER BY tn.unique_award_key, tn.action_date ASC, tn.modification_number ASC, tn.transaction_unique_id ASC "
         ")"
     )
     _latest_transaction_cte = str(
         "txn_latest AS ( "
-        "  SELECT DISTINCT ON (tn.award_id) "
-        "    tn.award_id, "
+        "  SELECT DISTINCT ON (tn.unique_award_key) "
+        "    tn.unique_award_key, "
         "    tn.id, "
         "    tn.awarding_agency_id, "
         "    tn.action_date, "
@@ -64,13 +73,13 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         "      ELSE NULL END AS category "
         "  FROM transaction_normalized tn "
         "  {} "
-        "  ORDER BY tn.award_id, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
+        "  ORDER BY tn.unique_award_key, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
         ")"
     )
     _aggregate_transaction_cte = str(
         "txn_totals AS ( "
         "  SELECT "
-        "    tn.award_id, "
+        "    tn.unique_award_key, "
         "    SUM(tn.federal_action_obligation) AS total_obligation, "
         "    SUM(tn.original_loan_subsidy_cost) AS total_subsidy_cost, "
         "    SUM(tn.funding_amount) AS total_funding_amount, "
@@ -78,15 +87,15 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         "    SUM(tn.non_federal_funding_amount) AS non_federal_funding_amount "
         "  FROM transaction_normalized tn"
         "  {} "
-        "  GROUP BY tn.award_id "
+        "  GROUP BY tn.unique_award_key "
         ")"
     )
 
     if award_tuple:
-        values = [award_tuple, award_tuple, award_tuple]
-        earliest_transaction_cte = _earliest_transaction_cte.format(" WHERE tn.award_id IN %s ")
-        latest_transaction_cte = _latest_transaction_cte.format(" WHERE tn.award_id IN %s ")
-        aggregate_transaction_cte = _aggregate_transaction_cte.format(" WHERE tn.award_id IN %s ")
+        values = [award_unique_keys, award_unique_keys, award_unique_keys]
+        earliest_transaction_cte = _earliest_transaction_cte.format(" WHERE tn.unique_award_key IN %s ")
+        latest_transaction_cte = _latest_transaction_cte.format(" WHERE tn.unique_award_key IN %s ")
+        aggregate_transaction_cte = _aggregate_transaction_cte.format(" WHERE tn.unique_award_key IN %s ")
     else:
         values = None
         earliest_transaction_cte = _earliest_transaction_cte.format("")
@@ -125,9 +134,9 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         "    total_subsidy_cost = t.total_subsidy_cost "
         ""
         "  FROM txn_earliest e "
-        "  JOIN txn_latest l ON e.award_id = l.award_id "
-        "  JOIN txn_totals t ON e.award_id = t.award_id "
-        "  WHERE e.award_id = a.id "
+        "  JOIN txn_latest l ON e.unique_award_key = l.unique_award_key "
+        "  JOIN txn_totals t ON e.unique_award_key = t.unique_award_key "
+        "  WHERE e.unique_award_key = a.generated_unique_award_id "
     )
 
     sql_update = _sql_update.format(earliest_transaction_cte, latest_transaction_cte, aggregate_transaction_cte)

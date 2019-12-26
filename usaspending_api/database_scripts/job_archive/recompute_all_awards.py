@@ -58,22 +58,22 @@ BSD_SIGNALS = {
 
 _earliest_transaction_cte = str(
     "txn_earliest AS ( "
-    "  SELECT DISTINCT ON (tn.award_id) "
-    "    tn.award_id, "
+    "  SELECT DISTINCT ON (tn.unique_award_key) "
+    "    tn.unique_award_key, "
     "    tn.id, "
     "    tn.action_date, "
     "    tn.description, "
     "    tn.period_of_performance_start_date "
     "  FROM transaction_normalized tn"
-    "  WHERE tn.award_id IN ({award_ids}) "
-    "  ORDER BY tn.award_id, tn.action_date ASC, tn.modification_number ASC, tn.transaction_unique_id ASC "
+    "  WHERE tn.unique_award_key IN ({award_ids}) "
+    "  ORDER BY tn.unique_award_key, tn.action_date ASC, tn.modification_number ASC, tn.transaction_unique_id ASC "
     ")"
 )
 
 _latest_transaction_cte = str(
     "txn_latest AS ( "
-    "  SELECT DISTINCT ON (tn.award_id) "
-    "    tn.award_id, "
+    "  SELECT DISTINCT ON (tn.unique_award_key) "
+    "    tn.unique_award_key, "
     "    tn.id, "
     "    tn.awarding_agency_id, "
     "    tn.action_date, "
@@ -93,28 +93,28 @@ _latest_transaction_cte = str(
     "      WHEN tn.type LIKE 'IDV%%' THEN 'idv' "
     "      ELSE NULL END AS category "
     "  FROM transaction_normalized tn"
-    "  WHERE tn.award_id IN ({award_ids}) "
-    "  ORDER BY tn.award_id, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
+    "  WHERE tn.unique_award_key IN ({award_ids}) "
+    "  ORDER BY tn.unique_award_key, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
     ")"
 )
 _aggregate_transaction_cte = str(
     "txn_totals AS ( "
     "  SELECT "
-    "    award_id, "
+    "    unique_award_key, "
     "    SUM(federal_action_obligation) AS total_obligation, "
     "    SUM(original_loan_subsidy_cost) AS total_subsidy_cost, "
     "    SUM(funding_amount) AS total_funding_amount, "
     "    SUM(face_value_loan_guarantee) AS total_loan_value, "
     "    SUM(non_federal_funding_amount) AS non_federal_funding_amount "
     "  FROM transaction_normalized "
-    "  WHERE award_id IN ({award_ids}) "
-    "  GROUP BY award_id "
+    "  WHERE unique_award_key IN ({award_ids}) "
+    "  GROUP BY unique_award_key "
     ")"
 )
 _executive_comp_cte = str(
     "executive_comp AS ( "
-    "  SELECT DISTINCT ON (tn.award_id) "
-    "    tn.award_id, "
+    "  SELECT DISTINCT ON (tn.unique_award_key) "
+    "    tn.unique_award_key, "
     "    tf.officer_1_amount, "
     "    tf.officer_1_name, "
     "    tf.officer_2_amount, "
@@ -127,8 +127,8 @@ _executive_comp_cte = str(
     "    tf.officer_5_name "
     "  FROM transaction_normalized tn "
     "  INNER JOIN {transaction_table} AS tf ON tn.id = tf.transaction_id "
-    "  WHERE tf.officer_1_name IS NOT NULL AND award_id IN ({award_ids}) "
-    "  ORDER BY tn.award_id, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
+    "  WHERE tn.unique_award_key IN ({award_ids}) "
+    "  ORDER BY tn.unique_award_key, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
     ") "
 )
 
@@ -172,11 +172,11 @@ UPDATE_AWARDS_SQL = str(
     "officer_5_name = ec.officer_5_name "
     ""
     "FROM txn_earliest e "
-    "JOIN txn_latest l ON e.award_id = l.award_id "
-    "JOIN txn_totals t ON e.award_id = t.award_id "
-    "LEFT JOIN executive_comp AS ec ON e.award_id = ec.award_id "
+    "JOIN txn_latest l ON e.unique_award_key = l.unique_award_key "
+    "JOIN txn_totals t ON e.unique_award_key = t.unique_award_key "
+    "LEFT JOIN executive_comp AS ec ON e.unique_award_key = ec.unique_award_key "
     "WHERE "
-    "  a.id = e.award_id AND ("
+    "  a.generated_unique_award_id = e.unique_award_key AND ("
     "    a.earliest_transaction_id IS DISTINCT FROM e.id "
     "    OR a.date_signed IS DISTINCT FROM e.action_date "
     "    OR a.description IS DISTINCT FROM e.description "
@@ -214,8 +214,8 @@ UPDATE_AWARDS_SQL = UPDATE_AWARDS_SQL.format(
 )
 
 DEBUG, CLEANUP = False, False
-GET_FABS_AWARDS = "SELECT id FROM awards where is_fpds = FALSE AND id BETWEEN {minid} AND {maxid}"
-GET_FPDS_AWARDS = "SELECT id FROM awards where is_fpds = TRUE AND id BETWEEN {minid} AND {maxid}"
+GET_FABS_AWARDS = "SELECT generated_unique_award_id FROM awards where is_fpds = FALSE AND id BETWEEN {minid} AND {maxid}"
+GET_FPDS_AWARDS = "SELECT generated_unique_award_id FROM awards where is_fpds = TRUE AND id BETWEEN {minid} AND {maxid}"
 GET_MIN_MAX_SQL = "SELECT MIN(id), MAX(id) FROM awards"
 MAX_ID, MIN_ID, CLOSING_TIME, ITERATION_ESTIMATED_SECONDS = None, None, None, None
 TOTAL_UPDATES, CHUNK_SIZE = 0, 20000
@@ -356,9 +356,9 @@ def main():
             with Timer("[Awards {:,} - {:,}]".format(batch_min, batch_max), pipe_output=logging.info) as t:
                 with connection.cursor() as cursor:
                     cursor.execute(GET_FABS_AWARDS.format(minid=batch_min, maxid=batch_max))
-                    fabs = [str(row[0]) for row in cursor.fetchall()]
+                    fabs = [f"'{row[0]}'" for row in cursor.fetchall()]
                     cursor.execute(GET_FPDS_AWARDS.format(minid=batch_min, maxid=batch_max))
-                    fpds = [str(row[0]) for row in cursor.fetchall()]
+                    fpds = [f"'{row[0]}'" for row in cursor.fetchall()]
 
                 if fabs or fpds:
                     row_count = run_update_query(fabs_awards=fabs, fpds_awards=fpds)
