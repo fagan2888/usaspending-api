@@ -214,7 +214,9 @@ UPDATE_AWARDS_SQL = UPDATE_AWARDS_SQL.format(
 )
 
 DEBUG, CLEANUP = False, False
-GET_FABS_AWARDS = "SELECT generated_unique_award_id FROM awards where is_fpds = FALSE AND id BETWEEN {minid} AND {maxid}"
+GET_FABS_AWARDS = (
+    "SELECT generated_unique_award_id FROM awards where is_fpds = FALSE AND id BETWEEN {minid} AND {maxid}"
+)
 GET_FPDS_AWARDS = "SELECT generated_unique_award_id FROM awards where is_fpds = TRUE AND id BETWEEN {minid} AND {maxid}"
 GET_MIN_MAX_SQL = "SELECT MIN(id), MAX(id) FROM awards"
 MAX_ID, MIN_ID, CLOSING_TIME, ITERATION_ESTIMATED_SECONDS = None, None, None, None

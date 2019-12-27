@@ -27,10 +27,8 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
     the Award's most recent transaction.
     """
     award_unique_keys = None
-    sql = "SELECT generated_unique_award_id FROM awards"
-    values = None
     if award_tuple:
-        sql += " WHERE id IN %s"
+        sql = "SELECT generated_unique_award_id FROM awards WHERE id IN %s"
         values = [award_tuple]
         with connection.cursor() as cursor:
             cursor.execute(sql, values)
@@ -47,7 +45,7 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         "  FROM transaction_normalized tn "
         "  {} "
         "  ORDER BY tn.unique_award_key, tn.action_date ASC, tn.modification_number ASC, tn.transaction_unique_id ASC "
-        ")"
+        ") "
     )
     _latest_transaction_cte = str(
         "txn_latest AS ( "
@@ -74,7 +72,7 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         "  FROM transaction_normalized tn "
         "  {} "
         "  ORDER BY tn.unique_award_key, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
-        ")"
+        ") "
     )
     _aggregate_transaction_cte = str(
         "txn_totals AS ( "
@@ -88,7 +86,7 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         "  FROM transaction_normalized tn"
         "  {} "
         "  GROUP BY tn.unique_award_key "
-        ")"
+        ") "
     )
 
     if award_tuple:
@@ -136,7 +134,28 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         "  FROM txn_earliest e "
         "  JOIN txn_latest l ON e.unique_award_key = l.unique_award_key "
         "  JOIN txn_totals t ON e.unique_award_key = t.unique_award_key "
-        "  WHERE e.unique_award_key = a.generated_unique_award_id "
+        "  WHERE "
+        "    e.unique_award_key = a.generated_unique_award_id AND ("
+        "        a.earliest_transaction_id                 IS DISTINCT FROM e.id "
+        "      OR a.date_signed                             IS DISTINCT FROM e.action_date "
+        "      OR a.description                             IS DISTINCT FROM e.description "
+        "      OR a.period_of_performance_start_date        IS DISTINCT FROM e.period_of_performance_start_date "
+        "      OR a.latest_transaction_id                   IS DISTINCT FROM l.id "
+        "      OR a.awarding_agency_id                      IS DISTINCT FROM l.awarding_agency_id "
+        "      OR a.category                                IS DISTINCT FROM l.category "
+        "      OR a.certified_date                          IS DISTINCT FROM l.action_date "
+        "      OR a.funding_agency_id                       IS DISTINCT FROM l.funding_agency_id "
+        "      OR a.last_modified_date                      IS DISTINCT FROM l.last_modified_date "
+        "      OR a.period_of_performance_current_end_date  IS DISTINCT FROM l.period_of_performance_current_end_date "
+        "      OR a.place_of_performance_id                 IS DISTINCT FROM l.place_of_performance_id "
+        "      OR a.recipient_id                            IS DISTINCT FROM l.recipient_id "
+        "      OR a.type                                    IS DISTINCT FROM l.type_description "
+        "      OR a.non_federal_funding_amount              IS DISTINCT FROM t.non_federal_funding_amount "
+        "      OR a.total_funding_amount                    IS DISTINCT FROM t.total_funding_amount "
+        "      OR a.total_loan_value                        IS DISTINCT FROM t.total_loan_value "
+        "      OR a.total_obligation                        IS DISTINCT FROM t.total_obligation "
+        "      OR a.total_subsidy_cost                      IS DISTINCT FROM t.total_subsidy_cost "
+        ") "
     )
 
     sql_update = _sql_update.format(earliest_transaction_cte, latest_transaction_cte, aggregate_transaction_cte)
@@ -157,7 +176,9 @@ def prune_empty_awards(award_tuple: Optional[tuple] = None) -> int:
 
     _modify_financial_accounts_sql = (
         "UPDATE financial_accounts_by_awards "
-        "SET award_id = null "
+        "  SET "
+        "    update_date = now(), "
+        "    award_id = null "
         "WHERE award_id IN ({});".format(_find_empty_awards_sql)
     )
 
@@ -193,6 +214,7 @@ def update_assistance_awards(award_tuple: Optional[tuple] = None) -> int:
         ") "
         "UPDATE awards a "
         "  SET "
+        "    update_date = now(), "
         "    officer_1_amount = ec.officer_1_amount, "
         "    officer_1_name = ec.officer_1_name, "
         "    officer_2_amount = ec.officer_2_amount, "
@@ -204,7 +226,18 @@ def update_assistance_awards(award_tuple: Optional[tuple] = None) -> int:
         "    officer_5_amount = ec.officer_5_amount, "
         "    officer_5_name = ec.officer_5_name "
         "  FROM executive_comp AS ec "
-        "  WHERE ec.award_id = a.id "
+        "  WHERE ec.award_id = a.id AND ( "
+        "       a.officer_1_amount IS DISTINCT FROM ec.officer_1_amount "
+        "    OR a.officer_1_name   IS DISTINCT FROM ec.officer_1_name "
+        "    OR a.officer_2_amount IS DISTINCT FROM ec.officer_2_amount "
+        "    OR a.officer_2_name   IS DISTINCT FROM ec.officer_2_name "
+        "    OR a.officer_3_amount IS DISTINCT FROM ec.officer_3_amount "
+        "    OR a.officer_3_name   IS DISTINCT FROM ec.officer_3_name "
+        "    OR a.officer_4_amount IS DISTINCT FROM ec.officer_4_amount "
+        "    OR a.officer_4_name   IS DISTINCT FROM ec.officer_4_name "
+        "    OR a.officer_5_amount IS DISTINCT FROM ec.officer_5_amount "
+        "    OR a.officer_5_name   IS DISTINCT FROM ec.officer_5_name "
+        ") "
     )
 
     if award_tuple:
@@ -259,7 +292,7 @@ def update_contract_awards(award_tuple: Optional[tuple] = None) -> int:
         "  FROM transaction_normalized AS tn "
         "  INNER JOIN transaction_fpds AS tf ON tn.id = tf.transaction_id "
         "  {}"
-        ")"
+        ") "
     )
 
     _executive_comp_cte = str(
@@ -300,6 +333,7 @@ def update_contract_awards(award_tuple: Optional[tuple] = None) -> int:
         "WITH {}, {}, {} "
         "UPDATE awards a "
         "  SET "
+        "    update_date = now(), "
         "    base_and_all_options_value = t.total_base_and_options_value, "
         "    base_exercised_options_val = t.base_exercised_options_val, "
         ""
@@ -321,7 +355,24 @@ def update_contract_awards(award_tuple: Optional[tuple] = None) -> int:
         "  FROM txn_totals AS t "
         "  INNER JOIN extra_fpds_fields AS eff ON t.award_id = eff.award_id "
         "  LEFT JOIN executive_comp AS ec ON t.award_id = ec.award_id "
-        "  WHERE t.award_id = a.id "
+        "  WHERE t.award_id = a.id AND ( "
+        "        a.base_and_all_options_value IS DISTINCT FROM t.total_base_and_options_value "
+        "     OR a.base_exercised_options_val IS DISTINCT FROM t.base_exercised_options_val "
+        "     OR a.type                       IS DISTINCT FROM eff.type "
+        "     OR a.type_description           IS DISTINCT FROM eff.type_description "
+        "     OR a.fpds_agency_id             IS DISTINCT FROM eff.agency_id "
+        "     OR a.fpds_parent_agency_id      IS DISTINCT FROM eff.referenced_idv_agency_iden "
+        "     OR a.officer_1_amount           IS DISTINCT FROM ec.officer_1_amount "
+        "     OR a.officer_1_name             IS DISTINCT FROM ec.officer_1_name "
+        "     OR a.officer_2_amount           IS DISTINCT FROM ec.officer_2_amount "
+        "     OR a.officer_2_name             IS DISTINCT FROM ec.officer_2_name "
+        "     OR a.officer_3_amount           IS DISTINCT FROM ec.officer_3_amount "
+        "     OR a.officer_3_name             IS DISTINCT FROM ec.officer_3_name "
+        "     OR a.officer_4_amount           IS DISTINCT FROM ec.officer_4_amount "
+        "     OR a.officer_4_name             IS DISTINCT FROM ec.officer_4_name "
+        "     OR a.officer_5_amount           IS DISTINCT FROM ec.officer_5_amount "
+        "     OR a.officer_5_name             IS DISTINCT FROM ec.officer_5_name "
+        ") "
     )
 
     sql_update = _sql_update.format(aggregate_transaction_cte, extra_fpds_fields, executive_comp_cte)
@@ -351,12 +402,16 @@ def update_award_subawards(award_tuple: Optional[tuple] = None) -> int:
 
     _sql_update = str(
         "WITH {} "
-        "UPDATE awards "
+        "UPDATE awards a"
         "  SET "
+        "    update_date = now(), "
         "    total_subaward_amount = subaward_totals.total_subaward_amount, "
         "    subaward_count = subaward_totals.subaward_count "
         "  FROM subaward_totals "
-        "  WHERE subaward_totals.award_id = id "
+        "  WHERE subaward_totals.award_id = id AND ( "
+        "       a.total_subaward_amount IS DISTINCT FROM subaward_totals.total_subaward_amount "
+        "    OR a.subaward_count IS DISTINCT FROM subaward_totals.subaward_count "
+        ") "
     )
 
     sql_update = _sql_update.format(sql_sub_totals)
