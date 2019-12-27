@@ -56,11 +56,11 @@ DESTROY_ORPHANS_REFERENCES_LOCATION_SQL = (
 
 logger = logging.getLogger("console")
 
-failed_ids = []
+FAILED_IDS = []
 
 
 def destroy_orphans():
-    """cleans up tables after load_ids is called"""
+    """cleans up tables after load_fpds_transactions is called"""
     with connection.cursor() as cursor:
         cursor.execute(DESTROY_ORPHANS_LEGAL_ENTITY_SQL)
         cursor.execute(DESTROY_ORPHANS_REFERENCES_LOCATION_SQL)
@@ -77,56 +77,49 @@ def delete_stale_fpds(date):
 
     detached_award_procurement_ids = get_deleted_fpds_data_from_s3(date)
 
-    ids_to_delete = ",".join([str(id) for id in detached_award_procurement_ids])
-    logger.debug(f"Obtained these delete record IDs: [{ids_to_delete}]")
-
     if not detached_award_procurement_ids:
         return []
+
+    ids_to_delete = ",".join([str(id) for id in detached_award_procurement_ids])
+    logger.debug(f"Obtained these delete record IDs: [{ids_to_delete}]")
 
     with connection.cursor() as cursor:
         cursor.execute(
             f"select transaction_id from transaction_fpds where detached_award_procurement_id in ({ids_to_delete})"
         )
-        # assumes, possibly dangerously, that this won't be too many for the job to handle
+        # assumes that this won't be too many which would degrade performance or require too much memory
         transaction_normalized_ids = [str(row[0]) for row in cursor.fetchall()]
 
-        # since sql can't handle empty updates, we need to safely exit
         if not transaction_normalized_ids:
             return []
 
         tx_normalized_id_str = ",".join(transaction_normalized_ids)
 
-        # Set backreferences from Awards to Transaction Normalized to null. These pointers will be correctly updated
-        # in the update awards stage later on
+        # Set backreferences from Awards to Transaction Normalized to null. These FKs will be updated later
         cursor.execute(
             "update awards set latest_transaction_id = null, earliest_transaction_id = null "
             "where latest_transaction_id in ({ids}) or earliest_transaction_id in ({ids}) "
             "returning id".format(ids=tx_normalized_id_str)
         )
         awards_touched = cursor.fetchall()
+        logger.info(f"{len(awards_touched)} were unlinked to transactions due to pending deletes")
 
-        logger.info(f"{len(awards_touched)} were unlinked to bookend transactions due to deletes")
-
-        # Remove Trasaction FPDS rows
         cursor.execute(
-            "delete from transaction_fpds where transaction_id in ({}) returning transaction_id".format(
-                tx_normalized_id_str
-            )
+            f"delete from transaction_fpds where transaction_id in ({tx_normalized_id_str}) returning transaction_id"
         )
-        deleted_fpds = cursor.fetchall()
+        deleted_fpds = set(cursor.fetchall())
 
-        # Remove Transaction Normalized rows
-        cursor.execute("delete from transaction_normalized where id in ({}) returning id".format(tx_normalized_id_str))
-        deleted_transactions = cursor.fetchall()
+        cursor.execute(f"delete from transaction_normalized where id in ({tx_normalized_id_str}) returning id")
+        deleted_transactions = set(cursor.fetchall())
 
-        if len(deleted_transactions) != len(deleted_fpds):
+        if deleted_transactions != deleted_fpds:
             msg = "Delete Mismatch! Counts of transaction_normalized ({}) and transaction_fpds ({}) deletes"
             raise RuntimeError(msg.format(len(deleted_transactions), len(deleted_fpds)))
 
         return awards_touched
 
 
-def load_ids(chunk):
+def load_fpds_transactions(chunk):
     """
     Run transaction load for the provided ids. This will create any new rows in other tables to support the transaction
     data, but does NOT update "secondary" award values like total obligations or C -> D linkages. If transactions are
@@ -248,7 +241,7 @@ def _load_transactions(load_objects):
                         load_object["transaction_fpds"]["detached_award_procurement_id"], e.pgerror
                     )
                 )
-                failed_ids.append(load_object["transaction_fpds"]["detached_award_procurement_id"])
+                FAILED_IDS.append(load_object["transaction_fpds"]["detached_award_procurement_id"])
 
     return list(ids_of_awards_created_or_updated)
 

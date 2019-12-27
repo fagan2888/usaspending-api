@@ -12,11 +12,11 @@ from usaspending_api.common.helpers.etl_helpers import update_c_to_d_linkages
 from usaspending_api.common.helpers.sql_helpers import get_broker_dsn_string
 from usaspending_api.common.retrieve_file_from_uri import RetrieveFileFromUri
 from usaspending_api.etl.award_helpers import update_awards, update_contract_awards, prune_empty_awards
-from usaspending_api.etl.transaction_loaders.fpds_loader import load_ids, failed_ids, delete_stale_fpds
+from usaspending_api.etl.transaction_loaders.fpds_loader import load_fpds_transactions, FAILED_IDS, delete_stale_fpds
 
 logger = logging.getLogger("console")
 
-CHUNK_SIZE = 5000
+CHUNK_SIZE = 15000
 
 ALL_FPDS_QUERY = "SELECT {} FROM detached_award_procurement"
 
@@ -41,19 +41,14 @@ class Command(BaseCommand):
             db_cursor.execute(db_query)
         return db_cursor
 
-    def load_fpds_incrementally(self, date: Optional[datetime]) -> None:
-        """Process incremental loads
-
-        loader will load and delete all transactions starting from date if provided
-        """
+    def load_fpds_incrementally(self, date: Optional[datetime], chunk_size: int = CHUNK_SIZE) -> None:
+        """Process incremental loads based on a date range or full data loads"""
 
         if date is None:
-            logger.info("fetching all fpds transactions...")
+            logger.info("Skipping deletes. Fetching all fpds transactions...")
         else:
-            logger.info("fetching fpds transactions since {}...".format(str(date)))
+            logger.info(f"Handling fpds transactions since {date}...")
 
-        # First clear any transactions marked for deletion. If the transactions have since been re-added, they will be back in the broker DB and will be re-inserted in the next step
-        if date:
             stale_awards = delete_stale_fpds(date.date())
             self.modified_award_ids.extend(stale_awards)
 
@@ -63,21 +58,22 @@ class Command(BaseCommand):
             logger.info("{} total records to update".format(total_records))
             cursor = self.get_cursor_for_date_query(connection, date)
             while True:
-                id_list = cursor.fetchmany(CHUNK_SIZE)
+                id_list = cursor.fetchmany(chunk_size)
                 if len(id_list) == 0:
                     break
-                logger.info("Loading batch from date query (size: {})...".format(len(id_list)))
-                self.modified_award_ids.extend(load_ids([row[0] for row in id_list]))
+                logger.info("Loading batch (size: {}) from date query...".format(len(id_list)))
+                self.modified_award_ids.extend(load_fpds_transactions([row[0] for row in id_list]))
                 records_processed = records_processed + len(id_list)
                 logger.info("{} out of {} processed".format(records_processed, total_records))
 
     @staticmethod
-    def next_file_batch_generator(file: IO[AnyStr]) -> List[str]:
+    def gen_read_file_for_ids(file: IO[AnyStr], chunk_size: int = CHUNK_SIZE) -> List[str]:
+        """ """
         while True:
-            lines = [line for line in (file.readline().decode("utf-8").strip() for _ in range(CHUNK_SIZE)) if line]
+            lines = [line for line in (file.readline().decode("utf-8").strip() for _ in range(chunk_size)) if line]
             yield lines
 
-            if len(lines) < CHUNK_SIZE:
+            if len(lines) < chunk_size:
                 break
 
     def load_fpds_from_file(self, file_path: str) -> None:
@@ -85,12 +81,12 @@ class Command(BaseCommand):
         total_count = 0
         with RetrieveFileFromUri(file_path).get_file_object() as file:
             logger.info(f"Loading transactions from IDs in {file_path}")
-            for next_batch in self.next_file_batch_generator(file):
+            for next_batch in self.gen_read_file_for_ids(file):
                 # logger.info(f"{len(next_batch)}..... '{next_batch[-1]}'")
                 id_list = [int(re.search(r"\d+", x).group()) for x in next_batch]
                 total_count += len(id_list)
                 logger.info(f"Loading next batch (size: {len(id_list)}, ids {id_list[0]}-{id_list[-1]})...")
-                self.modified_award_ids.extend(load_ids(id_list))
+                self.modified_award_ids.extend(load_fpds_transactions(id_list))
 
         logger.info(f"Total transaction IDs in file: {total_count}")
 
@@ -139,7 +135,7 @@ class Command(BaseCommand):
             self.load_fpds_incrementally(options["date"])
 
         elif options["ids"]:
-            self.modified_award_ids.extend(load_ids(options["ids"]))
+            self.modified_award_ids.extend(load_fpds_transactions(options["ids"]))
 
         elif options["file"]:
             self.load_fpds_from_file(options["file"])
@@ -158,14 +154,18 @@ class Command(BaseCommand):
             logger.info(f"{len(unique_awards)} award records impacted by transaction DML operations)")
             logger.info(f"{prune_empty_awards(tuple(unique_awards))} award records removed")
             logger.info(f"{update_awards(tuple(unique_awards))} award records updated")
-            logger.info(f"{update_contract_awards(tuple(unique_awards))} award records updated w/ FPDS-specific fields")
+            logger.info(f"{update_contract_awards(tuple(unique_awards))} award records updated on FPDS-specific fields")
             update_c_to_d_linkages("contract")
 
-        if failed_ids:
-            failed_id_str = ", ".join([str(id) for id in failed_ids])
+        logger.info(f"Script took {datetime.now(timezone.utc) - update_time}")
+
+        if FAILED_IDS:
+            failed_id_str = ", ".join([str(id) for id in FAILED_IDS])
             logger.error(f"The following detached_award_procurement_ids failed to load: [{failed_id_str}]")
             raise SystemExit(1)
 
         if options["reload_all"] or options["since_last_load"]:
             # we wait until after the load finishes to update the load date because if this crashes we'll need to load again
             update_last_load_date("fpds", update_time)
+
+        logger.info(f"Successfully Completed")
