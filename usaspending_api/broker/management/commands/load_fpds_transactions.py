@@ -1,16 +1,18 @@
-from django.core.management.base import BaseCommand
 import logging
-import re
 import psycopg2
-from datetime import datetime, timezone
+import re
 
-from usaspending_api.etl.transaction_loaders.fpds_loader import load_ids, failed_ids, delete_stale_fpds
-from usaspending_api.common.retrieve_file_from_uri import RetrieveFileFromUri
-from usaspending_api.common.helpers.date_helper import datetime_command_line_argument_type
-from usaspending_api.common.helpers.sql_helpers import get_broker_dsn_string
-from usaspending_api.common.helpers.etl_helpers import update_c_to_d_linkages
-from usaspending_api.etl.award_helpers import update_awards, update_contract_awards, prune_empty_awards
+from datetime import datetime, timezone
+from django.core.management.base import BaseCommand
+from typing import IO, List, AnyStr, Optional
+
 from usaspending_api.broker.helpers.last_load_date import get_last_load_date, update_last_load_date
+from usaspending_api.common.helpers.date_helper import datetime_command_line_argument_type
+from usaspending_api.common.helpers.etl_helpers import update_c_to_d_linkages
+from usaspending_api.common.helpers.sql_helpers import get_broker_dsn_string
+from usaspending_api.common.retrieve_file_from_uri import RetrieveFileFromUri
+from usaspending_api.etl.award_helpers import update_awards, update_contract_awards, prune_empty_awards
+from usaspending_api.etl.transaction_loaders.fpds_loader import load_ids, failed_ids, delete_stale_fpds
 
 logger = logging.getLogger("console")
 
@@ -39,12 +41,12 @@ class Command(BaseCommand):
             db_cursor.execute(db_query)
         return db_cursor
 
-    def load_fpds_incrementally(self, date):
+    def load_fpds_incrementally(self, date: Optional[datetime]) -> None:
+        """Process incremental loads
+
+        loader will load and delete all transactions starting from date if provided
         """
-        Handles "increment" loads, which includes deleting transactions so long as a date is provided
-        :param date: if provided, loader will load and delete all transactions starting from this date
-        :return: nothing
-        """
+
         if date is None:
             logger.info("fetching all fpds transactions...")
         else:
@@ -70,29 +72,27 @@ class Command(BaseCommand):
                 logger.info("{} out of {} processed".format(records_processed, total_records))
 
     @staticmethod
-    def next_file_batch_generator(file):
+    def next_file_batch_generator(file: IO[AnyStr]) -> List[str]:
         while True:
-            lines = file.readlines(CHUNK_SIZE * 8)  # since this is by bytes, this allows a rough translation to lines
-            lines = [line.decode("utf-8") for line in lines]
-            if len(lines) == 0:
-                break
+            lines = [line for line in (file.readline().decode("utf-8").strip() for _ in range(CHUNK_SIZE)) if line]
             yield lines
 
-    def load_fpds_from_file(self, file_path):
-        """
-        Loads arbitrary set of ids, WITHOUT checking for deletes.
-        :param file_path:
-        :return:
-        """
+            if len(lines) < CHUNK_SIZE:
+                break
+
+    def load_fpds_from_file(self, file_path: str) -> None:
+        """Loads arbitrary set of ids, WITHOUT checking for deletes"""
+        total_count = 0
         with RetrieveFileFromUri(file_path).get_file_object() as file:
+            logger.info(f"Loading transactions from IDs in {file_path}")
             for next_batch in self.next_file_batch_generator(file):
+                # logger.info(f"{len(next_batch)}..... '{next_batch[-1]}'")
                 id_list = [int(re.search(r"\d+", x).group()) for x in next_batch]
-                logger.info(
-                    "Loading next batch from provided file (size: {}, ids {}-{})...".format(
-                        len(id_list), id_list[0], id_list[-1]
-                    )
-                )
+                total_count += len(id_list)
+                logger.info(f"Loading next batch (size: {len(id_list)}, ids {id_list[0]}-{id_list[-1]})...")
                 self.modified_award_ids.extend(load_ids(id_list))
+
+        logger.info(f"Total transaction IDs in file: {total_count}")
 
     def add_arguments(self, parser):
         mutually_exclusive_group = parser.add_mutually_exclusive_group(required=True)
