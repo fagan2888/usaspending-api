@@ -101,7 +101,7 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         aggregate_transaction_cte = _aggregate_transaction_cte.format("")
 
     # construct a sql query that uses the common table expressions defined above
-    # and joins each of them to their corresopnding award.
+    # and joins each of them by the corresponding award.
     # The joined data from the CTEs are used to update awards fields as appropriate
     _sql_update = str(
         "WITH {}, {}, {} "
@@ -136,7 +136,7 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
         "  JOIN txn_totals t ON e.unique_award_key = t.unique_award_key "
         "  WHERE "
         "    e.unique_award_key = a.generated_unique_award_id AND ("
-        "        a.earliest_transaction_id                 IS DISTINCT FROM e.id "
+        "         a.earliest_transaction_id                 IS DISTINCT FROM e.id "
         "      OR a.date_signed                             IS DISTINCT FROM e.action_date "
         "      OR a.description                             IS DISTINCT FROM e.description "
         "      OR a.period_of_performance_start_date        IS DISTINCT FROM e.period_of_performance_start_date "
@@ -159,7 +159,6 @@ def update_awards(award_tuple: Optional[tuple] = None) -> int:
     )
 
     sql_update = _sql_update.format(earliest_transaction_cte, latest_transaction_cte, aggregate_transaction_cte)
-    # We don't need to worry about this double counting awards, because if it's deleted in the first step it can't be updated!
     return execute_database_statement(sql_update, values)
 
 

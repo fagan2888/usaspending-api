@@ -151,7 +151,7 @@ class Command(BaseCommand):
             # logger.info("cleaning orphaned metadata")
             # destroy_orphans()
             unique_awards = set(self.modified_award_ids)
-            logger.info(f"{len(unique_awards)} award records impacted by transaction DML operations)")
+            logger.info(f"{len(unique_awards)} award records impacted by transaction DML operations")
             logger.info(f"{prune_empty_awards(tuple(unique_awards))} award records removed")
             logger.info(f"{update_awards(tuple(unique_awards))} award records updated")
             logger.info(f"{update_contract_awards(tuple(unique_awards))} award records updated on FPDS-specific fields")
