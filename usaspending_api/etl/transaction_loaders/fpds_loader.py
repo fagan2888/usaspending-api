@@ -79,13 +79,15 @@ def delete_stale_fpds(date):
 
     if detached_award_procurement_ids:
         with connection.cursor() as cursor:
-            cursor.execute(
-                "select transaction_id from transaction_fpds where detached_award_procurement_id in ({})".format(
-                    ",".join([str(id) for id in detached_award_procurement_ids])
-                )
+            sql = "select transaction_id from transaction_fpds where detached_award_procurement_id in ({})".format(
+                ",".join([str(id) for id in detached_award_procurement_ids])
             )
+            logger.warn(f"SQL: {sql}")
+            cursor.execute(sql)
             # assumes, possibly dangerously, that this won't be too many for the job to handle
             transaction_normalized_ids = cursor.fetchall()
+
+            logger.warn(f"FOUND {len(transaction_normalized_ids)} fpds records")
 
             # since sql can't handle empty updates, we need to safely exit
             if not transaction_normalized_ids:
@@ -99,6 +101,8 @@ def delete_stale_fpds(date):
                 "returning id".format(ids=",".join([str(row[0]) for row in transaction_normalized_ids]))
             )
             awards_touched = cursor.fetchall()
+
+            logger.warn(f"UPDATED {len(awards_touched)} awards records")
 
             # Remove Trasaction FPDS rows
             cursor.execute(

@@ -14,7 +14,7 @@ from usaspending_api.broker.helpers.last_load_date import get_last_load_date, up
 
 logger = logging.getLogger("console")
 
-CHUNK_SIZE = 5000
+CHUNK_SIZE = 15000
 
 ALL_FPDS_QUERY = "SELECT {} FROM detached_award_procurement"
 
@@ -34,7 +34,11 @@ class Command(BaseCommand):
             db_query = ALL_FPDS_QUERY.format("detached_award_procurement_id")
 
         if date:
-            db_cursor.execute(db_query + " WHERE updated_at >= %s", [date])
+            from datetime import timedelta
+            next_date = date + timedelta(days=1)
+            if count:
+                logger.warn(f"Running [{date}] - [{next_date}]")
+            db_cursor.execute(db_query + " WHERE updated_at >= %s and updated_at < %s", [date, next_date])
         else:
             db_cursor.execute(db_query)
         return db_cursor
