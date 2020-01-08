@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Jira Ticket Number(s): DEV-3318, DEV-3442, DEV-3443
+Jira Ticket Number(s): DEV-3318, DEV-3442, DEV-3443, DEV-4109
 
 Expected CLI:
 
-    $ python usaspending_api/database_scripts/job_archive/recompute_all_awards.py
+    $ python3 usaspending_api/database_scripts/job_archive/recompute_all_awards.py
 
 Purpose:
 
@@ -12,6 +12,7 @@ Purpose:
     Improved logic for determining the initial transaction of an award which is
     used as the "earliest transaction" FK. Also make a mirror alteration to
     the logic determining "latest transaction" for an award.
+    Re-calculate awards using the unique_award_key
 
     All of these changes requires updating 100% of award records
 
@@ -26,7 +27,6 @@ import re
 import signal
 import time
 
-from argparse import ArgumentTypeError
 from datetime import datetime, timezone, timedelta
 from dateutil import parser as date_parser
 from os import environ
@@ -56,159 +56,164 @@ BSD_SIGNALS = {
 }
 
 
-_earliest_transaction_cte = str(
-    "txn_earliest AS ( "
-    "  SELECT DISTINCT ON (tn.unique_award_key) "
-    "    tn.unique_award_key, "
-    "    tn.id, "
-    "    tn.action_date, "
-    "    tn.description, "
-    "    tn.period_of_performance_start_date "
-    "  FROM transaction_normalized tn"
-    "  WHERE tn.unique_award_key IN ({award_ids}) "
-    "  ORDER BY tn.unique_award_key, tn.action_date ASC, tn.modification_number ASC, tn.transaction_unique_id ASC "
-    ")"
-)
+_earliest_transaction_cte = """
+    txn_earliest AS (
+      SELECT DISTINCT ON (tn.unique_award_key)
+        tn.unique_award_key,
+        tn.id,
+        tn.action_date,
+        tn.description,
+        tn.period_of_performance_start_date
+      FROM transaction_normalized tn
+      WHERE tn.unique_award_key IN ({award_ids})
+      ORDER BY tn.unique_award_key, tn.action_date ASC, tn.modification_number ASC, tn.transaction_unique_id ASC
+    )
+"""
 
-_latest_transaction_cte = str(
-    "txn_latest AS ( "
-    "  SELECT DISTINCT ON (tn.unique_award_key) "
-    "    tn.unique_award_key, "
-    "    tn.id, "
-    "    tn.awarding_agency_id, "
-    "    tn.action_date, "
-    "    tn.funding_agency_id, "
-    "    tn.last_modified_date, "
-    "    tn.period_of_performance_current_end_date, "
-    "    tn.place_of_performance_id, "
-    "    tn.recipient_id, "
-    "    tn.type, "
-    "    tn.type_description, "
-    "    CASE WHEN tn.type IN ('A', 'B', 'C', 'D') THEN 'contract' "
-    "      WHEN tn.type IN ('02', '03', '04', '05') THEN 'grant' "
-    "      WHEN tn.type in ('06', '10') THEN 'direct payment' "
-    "      WHEN tn.type in ('07', '08') THEN 'loans' "
-    "      WHEN tn.type = '09' THEN 'insurance' "
-    "      WHEN tn.type = '11' THEN 'other' "
-    "      WHEN tn.type LIKE 'IDV%%' THEN 'idv' "
-    "      ELSE NULL END AS category "
-    "  FROM transaction_normalized tn"
-    "  WHERE tn.unique_award_key IN ({award_ids}) "
-    "  ORDER BY tn.unique_award_key, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
-    ")"
-)
-_aggregate_transaction_cte = str(
-    "txn_totals AS ( "
-    "  SELECT "
-    "    unique_award_key, "
-    "    SUM(federal_action_obligation) AS total_obligation, "
-    "    SUM(original_loan_subsidy_cost) AS total_subsidy_cost, "
-    "    SUM(funding_amount) AS total_funding_amount, "
-    "    SUM(face_value_loan_guarantee) AS total_loan_value, "
-    "    SUM(non_federal_funding_amount) AS non_federal_funding_amount "
-    "  FROM transaction_normalized "
-    "  WHERE unique_award_key IN ({award_ids}) "
-    "  GROUP BY unique_award_key "
-    ")"
-)
-_executive_comp_cte = str(
-    "executive_comp AS ( "
-    "  SELECT DISTINCT ON (tn.unique_award_key) "
-    "    tn.unique_award_key, "
-    "    tf.officer_1_amount, "
-    "    tf.officer_1_name, "
-    "    tf.officer_2_amount, "
-    "    tf.officer_2_name, "
-    "    tf.officer_3_amount, "
-    "    tf.officer_3_name, "
-    "    tf.officer_4_amount, "
-    "    tf.officer_4_name, "
-    "    tf.officer_5_amount, "
-    "    tf.officer_5_name "
-    "  FROM transaction_normalized tn "
-    "  INNER JOIN {transaction_table} AS tf ON tn.id = tf.transaction_id "
-    "  WHERE tn.unique_award_key IN ({award_ids}) "
-    "  ORDER BY tn.unique_award_key, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC "
-    ") "
-)
+_latest_transaction_cte = """
+    txn_latest AS (
+      SELECT DISTINCT ON (tn.unique_award_key)
+        tn.unique_award_key,
+        tn.id,
+        tn.awarding_agency_id,
+        tn.action_date,
+        tn.funding_agency_id,
+        tn.last_modified_date,
+        tn.period_of_performance_current_end_date,
+        tn.place_of_performance_id,
+        tn.recipient_id,
+        tn.type,
+        tn.type_description,
+        CASE
+          WHEN tn.type IN ('A', 'B', 'C', 'D') THEN 'contract'
+          WHEN tn.type IN ('02', '03', '04', '05') THEN 'grant'
+          WHEN tn.type IN ('06', '10') THEN 'direct payment'
+          WHEN tn.type IN ('07', '08') THEN 'loans'
+          WHEN tn.type = '09' THEN 'insurance'
+          WHEN tn.type = '11' THEN 'other'
+          WHEN tn.type LIKE 'IDV%%' THEN 'idv'
+          ELSE NULL
+        END AS category
+      FROM transaction_normalized tn
+      WHERE tn.unique_award_key IN ({award_ids})
+      ORDER BY tn.unique_award_key, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC
+    )
+"""
+_aggregate_transaction_cte = """
+    txn_totals AS (
+      SELECT
+        tn.unique_award_key,
+        SUM(tn.federal_action_obligation) AS total_obligation,
+        SUM(tn.original_loan_subsidy_cost) AS total_subsidy_cost,
+        SUM(tn.funding_amount) AS total_funding_amount,
+        SUM(tn.face_value_loan_guarantee) AS total_loan_value,
+        SUM(tn.non_federal_funding_amount) AS non_federal_funding_amount
+      FROM transaction_normalized tn
+      WHERE tn.unique_award_key IN ({award_ids})
+      GROUP BY tn.unique_award_key
+    )
+"""
 
-UPDATE_AWARDS_SQL = str(
-    "WITH {}, {}, {}, {} "
-    "UPDATE awards a "
-    "SET "
-    "update_date = now(), "
-    "earliest_transaction_id = e.id, "
-    "date_signed = e.action_date, "
-    "description = e.description, "
-    "period_of_performance_start_date = e.period_of_performance_start_date, "
-    ""
-    "latest_transaction_id = l.id, "
-    "awarding_agency_id = l.awarding_agency_id, "
-    "category = l.category, "
-    "certified_date = l.action_date, "
-    "funding_agency_id = l.funding_agency_id, "
-    "last_modified_date = l.last_modified_date, "
-    "period_of_performance_current_end_date = l.period_of_performance_current_end_date, "
-    "place_of_performance_id = l.place_of_performance_id, "
-    "recipient_id = l.recipient_id, "
-    "type = l.type, "
-    "type_description = l.type_description, "
-    ""
-    "non_federal_funding_amount = t.non_federal_funding_amount, "
-    "total_funding_amount = t.total_funding_amount, "
-    "total_loan_value = t.total_loan_value, "
-    "total_obligation = t.total_obligation, "
-    "total_subsidy_cost = t.total_subsidy_cost, "
-    ""
-    "officer_1_amount = ec.officer_1_amount, "
-    "officer_1_name = ec.officer_1_name, "
-    "officer_2_amount = ec.officer_2_amount, "
-    "officer_2_name = ec.officer_2_name, "
-    "officer_3_amount = ec.officer_3_amount, "
-    "officer_3_name = ec.officer_3_name, "
-    "officer_4_amount = ec.officer_4_amount, "
-    "officer_4_name = ec.officer_4_name, "
-    "officer_5_amount = ec.officer_5_amount, "
-    "officer_5_name = ec.officer_5_name "
-    ""
-    "FROM txn_earliest e "
-    "JOIN txn_latest l ON e.unique_award_key = l.unique_award_key "
-    "JOIN txn_totals t ON e.unique_award_key = t.unique_award_key "
-    "LEFT JOIN executive_comp AS ec ON e.unique_award_key = ec.unique_award_key "
-    "WHERE "
-    "  a.generated_unique_award_id = e.unique_award_key AND ("
-    "    a.earliest_transaction_id IS DISTINCT FROM e.id "
-    "    OR a.date_signed IS DISTINCT FROM e.action_date "
-    "    OR a.description IS DISTINCT FROM e.description "
-    "    OR a.period_of_performance_start_date IS DISTINCT FROM e.period_of_performance_start_date "
-    "    OR a.latest_transaction_id IS DISTINCT FROM l.id "
-    "    OR a.awarding_agency_id IS DISTINCT FROM l.awarding_agency_id "
-    "    OR a.category IS DISTINCT FROM l.category "
-    "    OR a.certified_date IS DISTINCT FROM l.action_date "
-    "    OR a.funding_agency_id IS DISTINCT FROM l.funding_agency_id "
-    "    OR a.last_modified_date IS DISTINCT FROM l.last_modified_date "
-    "    OR a.period_of_performance_current_end_date IS DISTINCT FROM l.period_of_performance_current_end_date "
-    "    OR a.place_of_performance_id IS DISTINCT FROM l.place_of_performance_id "
-    "    OR a.recipient_id IS DISTINCT FROM l.recipient_id "
-    "    OR a.type IS DISTINCT FROM l.type "
-    "    OR a.type_description IS DISTINCT FROM l.type_description "
-    "    OR a.non_federal_funding_amount IS DISTINCT FROM t.non_federal_funding_amount "
-    "    OR a.total_funding_amount IS DISTINCT FROM t.total_funding_amount "
-    "    OR a.total_loan_value IS DISTINCT FROM t.total_loan_value "
-    "    OR a.total_obligation IS DISTINCT FROM t.total_obligation "
-    "    OR a.total_subsidy_cost IS DISTINCT FROM t.total_subsidy_cost "
-    "    OR a.officer_1_amount IS DISTINCT FROM ec.officer_1_amount "
-    "    OR a.officer_1_name IS DISTINCT FROM ec.officer_1_name "
-    "    OR a.officer_2_amount IS DISTINCT FROM ec.officer_2_amount "
-    "    OR a.officer_2_name IS DISTINCT FROM ec.officer_2_name "
-    "    OR a.officer_3_amount IS DISTINCT FROM ec.officer_3_amount "
-    "    OR a.officer_3_name IS DISTINCT FROM ec.officer_3_name "
-    "    OR a.officer_4_amount IS DISTINCT FROM ec.officer_4_amount "
-    "    OR a.officer_4_name IS DISTINCT FROM ec.officer_4_name "
-    "    OR a.officer_5_amount IS DISTINCT FROM ec.officer_5_amount "
-    "    OR a.officer_5_name IS DISTINCT FROM ec.officer_5_name "
-    "  )"
-)
+_executive_comp_cte = """
+    executive_comp AS (
+      SELECT DISTINCT ON (tn.unique_award_key)
+        tn.unique_award_key,
+        tf.officer_1_amount,
+        tf.officer_1_name,
+        tf.officer_2_amount,
+        tf.officer_2_name,
+        tf.officer_3_amount,
+        tf.officer_3_name,
+        tf.officer_4_amount,
+        tf.officer_4_name,
+        tf.officer_5_amount,
+        tf.officer_5_name
+      FROM transaction_normalized tn
+      INNER JOIN {transaction_table} AS tf ON tn.id = tf.transaction_id
+      WHERE tn.unique_award_key IN ({award_ids})
+      ORDER BY tn.unique_award_key, tn.action_date DESC, tn.modification_number DESC, tn.transaction_unique_id DESC
+    )
+"""
+
+UPDATE_AWARDS_SQL = """
+    WITH {}, {}, {}, {}
+    UPDATE awards a
+    SET
+    update_date                             = now(),
+    earliest_transaction_id                 = e.id,
+    date_signed                             = e.action_date,
+    description                             = e.description,
+    period_of_performance_start_date        = e.period_of_performance_start_date,
+
+    latest_transaction_id                   = l.id,
+    awarding_agency_id                      = l.awarding_agency_id,
+    category                                = l.category,
+    certified_date                          = l.action_date,
+    funding_agency_id                       = l.funding_agency_id,
+    last_modified_date                      = l.last_modified_date,
+    period_of_performance_current_end_date  = l.period_of_performance_current_end_date,
+    place_of_performance_id                 = l.place_of_performance_id,
+    recipient_id                            = l.recipient_id,
+    type                                    = l.type,
+    type_description                        = l.type_description,
+
+    non_federal_funding_amount              = t.non_federal_funding_amount,
+    total_funding_amount                    = t.total_funding_amount,
+    total_loan_value                        = t.total_loan_value,
+    total_obligation                        = t.total_obligation,
+    total_subsidy_cost                      = t.total_subsidy_cost,
+
+    officer_1_amount                        = ec.officer_1_amount,
+    officer_1_name                          = ec.officer_1_name,
+    officer_2_amount                        = ec.officer_2_amount,
+    officer_2_name                          = ec.officer_2_name,
+    officer_3_amount                        = ec.officer_3_amount,
+    officer_3_name                          = ec.officer_3_name,
+    officer_4_amount                        = ec.officer_4_amount,
+    officer_4_name                          = ec.officer_4_name,
+    officer_5_amount                        = ec.officer_5_amount,
+    officer_5_name                          = ec.officer_5_name
+
+    FROM txn_earliest e
+    JOIN txn_latest l ON e.unique_award_key = l.unique_award_key
+    JOIN txn_totals t ON e.unique_award_key = t.unique_award_key
+    LEFT JOIN executive_comp AS ec ON e.unique_award_key = ec.unique_award_key
+    WHERE
+      a.generated_unique_award_id = e.unique_award_key
+      AND (
+           a.earliest_transaction_id                IS DISTINCT FROM e.id
+        OR a.date_signed                            IS DISTINCT FROM e.action_date
+        OR a.description                            IS DISTINCT FROM e.description
+        OR a.period_of_performance_start_date       IS DISTINCT FROM e.period_of_performance_start_date
+        OR a.latest_transaction_id                  IS DISTINCT FROM l.id
+        OR a.awarding_agency_id                     IS DISTINCT FROM l.awarding_agency_id
+        OR a.category                               IS DISTINCT FROM l.category
+        OR a.certified_date                         IS DISTINCT FROM l.action_date
+        OR a.funding_agency_id                      IS DISTINCT FROM l.funding_agency_id
+        OR a.last_modified_date                     IS DISTINCT FROM l.last_modified_date
+        OR a.period_of_performance_current_end_date IS DISTINCT FROM l.period_of_performance_current_end_date
+        OR a.place_of_performance_id                IS DISTINCT FROM l.place_of_performance_id
+        OR a.recipient_id                           IS DISTINCT FROM l.recipient_id
+        OR a.type                                   IS DISTINCT FROM l.type
+        OR a.type_description                       IS DISTINCT FROM l.type_description
+        OR a.non_federal_funding_amount             IS DISTINCT FROM t.non_federal_funding_amount
+        OR a.total_funding_amount                   IS DISTINCT FROM t.total_funding_amount
+        OR a.total_loan_value                       IS DISTINCT FROM t.total_loan_value
+        OR a.total_obligation                       IS DISTINCT FROM t.total_obligation
+        OR a.total_subsidy_cost                     IS DISTINCT FROM t.total_subsidy_cost
+        OR a.officer_1_amount                       IS DISTINCT FROM ec.officer_1_amount
+        OR a.officer_1_name                         IS DISTINCT FROM ec.officer_1_name
+        OR a.officer_2_amount                       IS DISTINCT FROM ec.officer_2_amount
+        OR a.officer_2_name                         IS DISTINCT FROM ec.officer_2_name
+        OR a.officer_3_amount                       IS DISTINCT FROM ec.officer_3_amount
+        OR a.officer_3_name                         IS DISTINCT FROM ec.officer_3_name
+        OR a.officer_4_amount                       IS DISTINCT FROM ec.officer_4_amount
+        OR a.officer_4_name                         IS DISTINCT FROM ec.officer_4_name
+        OR a.officer_5_amount                       IS DISTINCT FROM ec.officer_5_amount
+        OR a.officer_5_name                         IS DISTINCT FROM ec.officer_5_name
+      )
+"""
+
 UPDATE_AWARDS_SQL = UPDATE_AWARDS_SQL.format(
     _earliest_transaction_cte, _latest_transaction_cte, _aggregate_transaction_cte, _executive_comp_cte
 )
@@ -247,7 +252,7 @@ def datetime_command_line_argument_type(naive):
                 return parsed.astimezone(timezone.utc)
 
         except (OverflowError, TypeError, ValueError):
-            raise ArgumentTypeError("Unable to convert provided value to date/time")
+            raise argparse.ArgumentTypeError("Unable to convert provided value to date/time")
 
     return _datetime_command_line_argument_type
 
